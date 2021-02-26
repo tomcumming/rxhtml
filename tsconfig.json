@@ -4,7 +4,10 @@
     "strict": true,
     "target": "ESNext",
     "module": "ESNext",
-    "moduleResolution": "Node"
+    "moduleResolution": "Node",
+    "jsx": "react",
+    "jsxFactory": "Jsx.element",
+    "jsxFragmentFactory": "Jsx.fragment"
   },
   "include": ["src/**/*"]
 }

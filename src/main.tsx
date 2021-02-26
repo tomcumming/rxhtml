@@ -1,6 +1,7 @@
-import { EMPTY, interval, Subscription } from "rxjs";
-import { map, startWith } from "rxjs/operators";
-import * as Atts from "./attributes";
+import { EMPTY, interval, of, Subscription } from "rxjs";
+import { map, startWith, subscribeOn } from "rxjs/operators";
+
+import * as Jsx from "./jsx";
 import * as Html from "./html";
 import * as Fragment from "./fragment";
 import text from "./text";
@@ -91,8 +92,17 @@ function renderElement(
 function renderText(value$: Html.Text): { fc: FragmentChild; text: Text } {
   const text = document.createTextNode("");
 
-  const sub = value$.subscribe((value) => {
-    text.data = value;
+  const sub = new Subscription();
+
+  sub.add(
+    value$.subscribe((value) => {
+      text.data = value;
+    })
+  );
+
+  sub.add(() => {
+    console.log("removing text");
+    text.remove();
   });
 
   return { fc: { firstNode: text, sub }, text };
@@ -115,28 +125,22 @@ function renderTemplate(
   }
 }
 
+// Example :D
+
 const time$ = interval(1000).pipe(
   startWith(-1),
   map(() => new Date().toLocaleTimeString())
 );
 
-const elem: Html.Element = {
-  tagName: "p",
-  attributes: Atts.fixed({
-    "data-hello": "World",
-    "data-timer": interval(1000).pipe(map((n) => n.toString())),
-  }),
-  body: Fragment.fixed(text`Hello World `, {
-    element: {
-      tagName: "strong",
-      attributes: EMPTY,
-      body: text`The time is ${time$}`,
-    },
-  }),
-};
+const elem2 = (
+  <p
+    data-hello="Hello"
+    data-timer={interval(1000).pipe(map((n) => n.toString()))}
+  >
+    Hello World <strong>The time is {time$}</strong>
+  </p>
+);
 
-// Example :D
-
-const rendered = renderTemplate({ element: elem });
+const rendered = renderTemplate(elem2);
 document.body.appendChild(rendered.node);
 (window as any).fc = rendered.fc;
