@@ -1,4 +1,4 @@
-# Fun frontend with observables
+# Fun frontend with async iterables
 
 ## Ideas
 
@@ -7,4 +7,4 @@
 - No VDOM, opt in diffing where it makes sense
 - You control re-renders, send a new template to recreate an element/node
 - Easy render to `string` and hydration
-- One way to do it, use observables for everything, even component lifecycle
+- One way to do it, use `Stream`s for everything, even component lifecycle
