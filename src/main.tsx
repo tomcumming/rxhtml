@@ -127,14 +127,14 @@ const second$: Stream<Date> = async function* (cs: CancelSignal) {
   return COMPLETED;
 };
 
+const timeMsg$ = apply(
+  second$,
+  map((d) => d.toLocaleTimeString())
+);
+
 const elem2 = (
   <>
-    <p>
-      {apply(
-        second$,
-        map((d) => d.toLocaleTimeString())
-      )}
-    </p>
+    <p title={timeMsg$}>{timeMsg$}</p>
   </>
 );
 
