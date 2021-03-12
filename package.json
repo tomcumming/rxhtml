@@ -5,11 +5,11 @@
     "dev": "esbuild src/main.tsx --servedir=www --outdir=www/js --bundle --format=esm"
   },
   "dependencies": {
+    "cancelstream": "file:../cancelstream",
     "esbuild": "^0.8.51",
-    "prettier": "^2.2.1",
-    "rxjs": "^6.6.3"
+    "prettier": "^2.2.1"
   },
   "devDependencies": {
-    "typescript": "^4.2.2"
+    "typescript": "^4.2.3"
   }
 }

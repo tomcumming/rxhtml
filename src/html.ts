@@ -1,4 +1,4 @@
-import { Observable } from "rxjs";
+import { Stream } from "cancelstream";
 
 export const REMOVE_ATTRIBUTE = Symbol("Delete Attribute");
 
@@ -7,13 +7,7 @@ export type AttributeChange = {
   value: string | typeof REMOVE_ATTRIBUTE;
 };
 
-export type Attributes = Observable<AttributeChange>;
-
-export type FragmentChange =
-  | { insert: { index: number; template: Template } }
-  | { remove: number };
-
-export type Fragment = Observable<FragmentChange>;
+export type Attributes = Stream<AttributeChange>;
 
 export type Element = {
   tagName: string;
@@ -21,9 +15,9 @@ export type Element = {
   body?: Template;
 };
 
-export type Text = Observable<string>;
-
-export type Template =
-  | { text: Text }
+export type TemplateAtom =
+  | { text: string | Stream<string> }
   | { element: Element }
-  | { fragment: Fragment };
+  | { stream: Stream<Template> };
+
+export type Template = TemplateAtom[];

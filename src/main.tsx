@@ -1,146 +1,146 @@
-import { EMPTY, interval, of, Subscription } from "rxjs";
-import { map, startWith, subscribeOn } from "rxjs/operators";
-
 import * as Jsx from "./jsx";
+import {
+  CancelSignal,
+  Stream,
+  subscribe,
+  COMPLETED,
+  apply,
+  exhaustStreamBody,
+  StreamBody,
+} from "cancelstream";
+import map from "cancelstream/ops/map";
+import switchTo from "cancelstream/ops/switchTo";
 import * as Html from "./html";
-import * as Fragment from "./fragment";
-import text from "./text";
+import { cancelSignal } from "cancelstream/cancel";
 
-type FragmentChild = {
-  firstNode: Node;
-  sub: Subscription;
-};
+async function renderNode(
+  template: Html.Template,
+  cs: CancelSignal
+): Promise<[Node, StreamBody<unknown>]> {
+  const iter = renderTemplate(template)(cs);
+  const firstResult = await iter.next();
+  if (firstResult.done)
+    throw new Error(`Render template should return a single Node`);
+  return [firstResult.value, iter];
+}
 
-function renderFragment(
-  template: Html.Fragment
-): { fc: FragmentChild; frag: DocumentFragment } {
-  const frag = document.createDocumentFragment();
+function renderElement(element: Html.Element): Stream<Node> {
+  return async function* (cs: CancelSignal) {
+    const node = document.createElement(element.tagName);
 
-  const endMarkerComment = document.createComment("RxHtml Fragment End");
-  frag.appendChild(endMarkerComment);
-
-  const fc: FragmentChild = {
-    firstNode: endMarkerComment,
-    sub: new Subscription(),
-  };
-
-  let children: FragmentChild[] = [];
-
-  fc.sub.add(() => {
-    console.log("removing fragment");
-
-    for (const child of children) child.sub.unsubscribe();
-
-    endMarkerComment.remove();
-  });
-
-  const changesSub = template.subscribe((change) => {
-    if ("remove" in change) {
-      console.log("Removing child", change.remove);
-      // TODO bounds check
-      const [removed] = children.splice(change.remove, 1);
-      removed.sub.unsubscribe();
-    } else if ("insert" in change) {
-      console.log("inserting child at", change.insert.index);
-      // TODO bounds check
-      const nodeAfter =
-        change.insert.index === children.length
-          ? endMarkerComment
-          : children[change.insert.index].firstNode;
-      const { fc, node } = renderTemplate(change.insert.template);
-      endMarkerComment.parentNode?.insertBefore(node, nodeAfter);
-      children.splice(change.insert.index, 0, fc);
+    let childNodeIter: undefined | StreamBody<unknown>;
+    if (element.body) {
+      const [childNode, iter] = await renderNode(element.body, cs);
+      childNodeIter = iter;
+      node.appendChild(childNode);
     }
-  });
-  fc.sub.add(changesSub);
 
-  return { fc, frag };
-}
+    yield node;
 
-function renderElement(
-  template: Html.Element
-): {
-  fc: FragmentChild;
-  elem: HTMLElement;
-} {
-  const elem = document.createElement(template.tagName);
-
-  const sub = new Subscription();
-
-  sub.add(
-    template.attributes.subscribe((change) => {
+    const attributesTask = subscribe(element.attributes, cs, async (change) => {
       if (change.value === Html.REMOVE_ATTRIBUTE)
-        elem.removeAttribute(change.name);
-      else elem.setAttribute(change.name, change.value);
-    })
-  );
+        node.removeAttribute(change.name);
+      else node.setAttribute(change.name, change.value);
+    });
+    const bodyTask = childNodeIter
+      ? exhaustStreamBody(childNodeIter)
+      : Promise.resolve(COMPLETED);
 
-  if (template.body) {
-    const { fc, node } = renderTemplate(template.body);
-    sub.add(fc.sub);
-    elem.appendChild(node);
-  }
+    await Promise.all([attributesTask, bodyTask]);
 
-  sub.add(() => {
-    console.log("removing element");
-    elem.remove();
-  });
+    await cs[0];
+    if (childNodeIter) await exhaustStreamBody(childNodeIter);
+    node.remove();
 
-  return { fc: { sub, firstNode: elem }, elem };
+    return COMPLETED;
+  };
 }
 
-function renderText(value$: Html.Text): { fc: FragmentChild; text: Text } {
-  const text = document.createTextNode("");
+function renderText(value: string | Stream<string>): Stream<Node> {
+  return async function* (cs: CancelSignal) {
+    const node = document.createTextNode(
+      typeof value === "string" ? value : ""
+    );
+    yield node;
 
-  const sub = new Subscription();
+    if (typeof value !== "string") {
+      await subscribe(value, cs, async (data) => (node.data = data));
+    }
 
-  sub.add(
-    value$.subscribe((value) => {
-      text.data = value;
-    })
-  );
-
-  sub.add(() => {
-    console.log("removing text");
-    text.remove();
-  });
-
-  return { fc: { firstNode: text, sub }, text };
+    await cs[0];
+    node.remove();
+    return COMPLETED;
+  };
 }
 
-function renderTemplate(
-  template: Html.Template
-): { fc: FragmentChild; node: Node } {
-  if ("fragment" in template) {
-    const { fc, frag } = renderFragment(template.fragment);
-    return { fc, node: frag };
-  } else if ("element" in template) {
-    const { fc, elem } = renderElement(template.element);
-    return { fc, node: elem };
-  } else if ("text" in template) {
-    const { fc, text } = renderText(template.text);
-    return { fc, node: text };
+function renderTemplateStream(template$: Stream<Html.Template>): Stream<Node> {
+  return async function* (cs: CancelSignal) {
+    const marker = document.createComment(`AIHTML stream marker end`);
+    const docFrag = document.createDocumentFragment();
+    docFrag.appendChild(marker);
+    yield docFrag;
+
+    const templateNode$ = apply(template$, map(renderTemplate), switchTo());
+
+    await subscribe(templateNode$, cs, async (node) => {
+      marker.parentNode?.insertBefore(node, marker);
+    });
+
+    await cs[0];
+    marker.remove();
+
+    return COMPLETED;
+  };
+}
+
+function renderTemplateList(templates: Html.TemplateAtom[]): Stream<Node> {
+  throw new Error(`TODO render template list`);
+}
+
+function renderTemplateAtom(template: Html.TemplateAtom): Stream<Node> {
+  if ("text" in template) return renderText(template.text);
+  else if ("element" in template) return renderElement(template.element);
+  else if ("stream" in template) return renderTemplateStream(template.stream);
+  else throw new Error(`Unknown template atom type`);
+}
+
+// always returns one Node, cancel to unsub and remove
+function renderTemplate(template: Html.Template): Stream<Node> {
+  if (template.length === 1) {
+    return renderTemplateAtom(template[0]);
   } else {
-    throw new Error(`Unknown template type`);
+    return renderTemplateList(template);
   }
 }
 
 // Example :D
+const second$: Stream<Date> = async function* (cs: CancelSignal) {
+  let going = true;
+  cs[0].then(() => {
+    going = false;
+  });
 
-const time$ = interval(1000).pipe(
-  startWith(-1),
-  map(() => new Date().toLocaleTimeString())
-);
+  while (going) {
+    await new Promise((res) => setTimeout(res, 1000));
+    yield new Date();
+  }
+  return COMPLETED;
+};
 
 const elem2 = (
-  <p
-    data-hello="Hello"
-    data-timer={interval(1000).pipe(map((n) => n.toString()))}
-  >
-    Hello World <strong>The time is {time$}</strong>
-  </p>
+  <>
+    <p>
+      {apply(
+        second$,
+        map((d) => d.toLocaleTimeString())
+      )}
+    </p>
+  </>
 );
 
-const rendered = renderTemplate(elem2);
-document.body.appendChild(rendered.node);
-(window as any).fc = rendered.fc;
+const myCs = cancelSignal();
+(window as any).stopIt = myCs.cancel;
+
+subscribe(renderTemplate(elem2), myCs.cs, async (node) => {
+  document.body.appendChild(node);
+});

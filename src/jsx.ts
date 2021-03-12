@@ -1,19 +1,18 @@
-import { EMPTY, from, isObservable, Observable, of } from "rxjs";
-import { combineAll, map, mergeAll, scan } from "rxjs/operators";
+import { apply, fromIterable, of, Stream } from "cancelstream";
+
 import * as Html from "./html";
-import * as Frag from "./fragment";
+import map from "cancelstream/ops/map";
+import merge from "cancelstream/ops/merge";
 
 export type AttibuteNames = keyof HTMLElementTagNameMap[keyof HTMLElementTagNameMap];
 
 export type Printable = string | number | boolean;
 export type ChildAtom = Printable | Html.Template;
-export type ChildStream = ChildAtom | Observable<ChildAtom>;
-export type ChildType = ChildStream | ChildStream[];
+export type ChildType = ChildAtom | Stream<ChildAtom>;
 
-export type AttributeValue = boolean | string | Observable<string | boolean>;
+export type AttributeValue = boolean | string | Stream<string | boolean>;
 
 // Pinched from https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes
-
 export type Attributes = {
   accept: AttributeValue;
   accesskey: AttributeValue;
@@ -147,60 +146,41 @@ type AttributesMap = { [name: string]: AttributeValue };
 
 function flattenAttributeChanges(
   atts: AttributesMap
-): Observable<Html.AttributeChange> {
-  const changes: Observable<Html.AttributeChange>[] = Object.entries(atts).map(
-    ([name, values]) =>
-      isObservable(values)
-        ? values.pipe(
-            map((value) => ({
-              name,
-              value:
-                value === false
-                  ? Html.REMOVE_ATTRIBUTE
-                  : value === true
-                  ? ""
-                  : value,
-            }))
-          )
-        : of({
-            name,
-            value:
-              values === false
-                ? Html.REMOVE_ATTRIBUTE
-                : values === true
-                ? ""
-                : values,
-          })
+): Stream<Html.AttributeChange> {
+  function convertSimple(
+    value: boolean | string
+  ): string | typeof Html.REMOVE_ATTRIBUTE {
+    if (typeof value === "boolean") return value ? "" : Html.REMOVE_ATTRIBUTE;
+    else return value;
+  }
+
+  const changes: Stream<Html.AttributeChange>[] = Object.entries(atts).map(
+    ([name, value]) => {
+      if (typeof value === "boolean" || typeof value === "string")
+        return of({
+          name,
+          value: convertSimple(value),
+        });
+      else
+        return apply(
+          value,
+          map((value) => ({ name, value: convertSimple(value) }))
+        );
+    }
   );
 
-  return from(changes).pipe(mergeAll());
-}
-
-function templateFromChildAtom(child: ChildAtom): Html.Template {
-  if (typeof child === "object") {
-    return child;
-  } else if (typeof child === "string") {
-    return { text: of(child) };
-  } else if (typeof child === "number" || typeof child === "boolean") {
-    return { text: of(child.toString()) };
-  } else {
-    throw new Error(`Unexpected child type`);
-  }
+  return apply(fromIterable(changes), merge());
 }
 
 function templateFromChild(child: ChildType): Html.Template {
-  if (Array.isArray(child)) {
-    return { fragment: fragmentFromChildren(child) };
-  } else if (isObservable(child)) {
-    return { fragment: Frag.single(child.pipe(map(templateFromChildAtom))) };
-  } else {
-    return templateFromChildAtom(child);
-  }
-}
-
-function fragmentFromChildren(children: ChildType[]): Html.Fragment {
-  const templates = children.map(templateFromChild);
-  return Frag.fixed(templates);
+  if (
+    typeof child === "boolean" ||
+    typeof child === "number" ||
+    typeof child === "string"
+  )
+    return [{ text: child.toString() }];
+  else if (Array.isArray(child)) return child;
+  else return [{ stream: apply(child, map(templateFromChild)) }];
 }
 
 type ElementConstructorArgs =
@@ -209,23 +189,24 @@ type ElementConstructorArgs =
 
 export function element(...args: ElementConstructorArgs): Html.Template {
   if (args[0] === fragment) {
-    const [_fragment, ...children] = args;
-    return { fragment: fragmentFromChildren(children) };
+    const [_fragment, atts, ...children] = args;
+    if (atts !== null) throw new Error(`Non null atts on fragment`);
+    return children.flatMap(templateFromChild);
   } else {
     const [tagName, atts, ...children] = args;
-    return {
-      element: {
-        tagName,
-        attributes: atts !== null ? flattenAttributeChanges(atts) : EMPTY,
-        body:
-          children.length === 0
-            ? undefined
-            : children.length === 1
-            ? templateFromChild(children[0])
-            : { fragment: fragmentFromChildren(children) },
+    return [
+      {
+        element: {
+          tagName,
+          attributes: atts ? flattenAttributeChanges(atts) : of(),
+          body:
+            children.length === 0
+              ? undefined
+              : children.flatMap(templateFromChild),
+        },
       },
-    };
+    ];
   }
 }
 
-export const fragment = Symbol("RxHtml Fragment");
+export const fragment = Symbol("AIHtml Fragment");
