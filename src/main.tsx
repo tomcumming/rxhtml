@@ -1,45 +1,29 @@
-import {
-  CancelSignal,
-  Stream,
-  subscribe,
-  COMPLETED,
-  apply,
-} from "cancelstream";
-import map from "cancelstream/ops/map";
-import { cancelSignal } from "cancelstream/cancel";
-
-import * as Jsx from "./jsx";
+import { from, into, of } from "cancelstream";
 import { renderTemplate } from "./dom";
+import { html } from "./html";
 
-// Example :D
-const second$: Stream<Date> = async function* (cs: CancelSignal) {
-  let going = true;
-  cs[0].then(() => {
-    going = false;
-  });
-
-  while (going) {
+async function* seconds() {
+  let count = 0;
+  while (true) {
     await new Promise((res) => setTimeout(res, 1000));
-    yield new Date();
+    yield count++;
   }
-  return COMPLETED;
-};
+}
 
-const timeMsg$ = apply(
-  second$,
-  map((d) => d.toLocaleTimeString())
-);
+const myExampleTemplate = html`
+  Hello
+  <h1 title=${of("First value", "second value")}>
+    Counting seconds: ${from(seconds())}
+  </h1>
+  <ul>
+    ${[1, 2, 3].map((n) => html`<li>Item ${n}</li>`)}
+  </ul>
+`;
 
-const myTemplate = (
-  <>
-    <h1>Welcome to my example</h1>
-    <p title={timeMsg$}>The time: {timeMsg$}</p>
-  </>
-);
+async function main() {
+  for await (const node of into(renderTemplate(myExampleTemplate))) {
+    document.body.appendChild(node);
+  }
+}
 
-const myCancelSignal = cancelSignal();
-(window as any).stopIt = myCancelSignal.cancel;
-
-subscribe(renderTemplate(myTemplate), myCancelSignal.cs, async (node) => {
-  document.body.appendChild(node);
-});
+main();

@@ -1,23 +1,44 @@
 import { Stream } from "cancelstream";
 
-export const REMOVE_ATTRIBUTE = Symbol("Delete Attribute");
+// TODO work this out properly, maybe copy lit-html
+const attributeMatcher = /(?:\s|^)([\w-]+)\s*=\s*$/mu;
 
-export type AttributeChange = {
-  name: string;
-  value: string | typeof REMOVE_ATTRIBUTE;
+type TemplateValuePart =
+  | { attribute: string; value: unknown }
+  | { child: TemplateChild };
+
+export type TemplateStringlike = string | number | boolean;
+
+export type TemplateChildAtom = TemplateStringlike | Template;
+
+export type TemplateChild =
+  | TemplateChildAtom
+  | Stream<TemplateChildAtom>
+  | TemplateChildAtom[];
+
+export type Template = {
+  stringParts: TemplateStringsArray;
+  values: TemplateValuePart[];
 };
 
-export type Attributes = Stream<AttributeChange>;
+export function html(
+  stringParts: TemplateStringsArray,
+  ...valParts: TemplateChild[]
+): Template {
+  const template: Template = {
+    stringParts,
+    values: [],
+  };
 
-export type Element = {
-  tagName: string;
-  attributes: Attributes;
-  body?: Template;
-};
+  for (let idx = 0; idx < valParts.length; idx += 1) {
+    const value = valParts[idx];
+    const stringBefore = stringParts[idx];
 
-export type TemplateAtom =
-  | { text: string | Stream<string> }
-  | { element: Element }
-  | { stream: Stream<Template> };
+    const attributeMatch = attributeMatcher.exec(stringBefore);
+    if (attributeMatch)
+      template.values.push({ attribute: attributeMatch[1], value });
+    else template.values.push({ child: value });
+  }
 
-export type Template = TemplateAtom[];
+  return template;
+}

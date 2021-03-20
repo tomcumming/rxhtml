@@ -1,131 +1,198 @@
 import {
-  CancelSignal,
-  Stream,
-  subscribe,
-  COMPLETED,
   apply,
+  CancelSignal,
+  COMPLETED,
   exhaustStreamBody,
+  of,
+  Stream,
   StreamBody,
+  subscribe,
 } from "cancelstream";
-import map from "cancelstream/ops/map";
 import switchTo from "cancelstream/ops/switchTo";
+import map from "cancelstream/ops/map";
 import * as Html from "./html";
 
+const identifiablePrefix = `__STREAM__HTML__MARKER__`;
+
+function htmlForTemplate(template: Html.Template): string {
+  return (
+    template.stringParts[0] +
+    template.values
+      .map((value, idx) => {
+        const markerBit =
+          "attribute" in value
+            ? `"${identifiablePrefix}${idx}"`
+            : `<slot data-marker="${identifiablePrefix}${idx}"></slot>`;
+        return markerBit + template.stringParts[idx + 1];
+      })
+      .join("")
+  );
+}
+
+function findChildValueNodes(fragment: DocumentFragment): Element[] {
+  let nodes: Element[] = [];
+  const walker = document.createTreeWalker(fragment, NodeFilter.SHOW_ELEMENT);
+  let currentNode = walker.nextNode();
+  while (currentNode instanceof Element) {
+    if (currentNode.tagName === "slot") {
+      const markerAttr = currentNode.getAttribute("data-marker");
+      if (markerAttr?.startsWith(identifiablePrefix)) {
+        currentNode.removeAttribute("data-marker");
+        nodes.push(currentNode);
+        currentNode = walker.nextNode();
+        continue;
+      }
+    }
+
+    for (const attr of currentNode.attributes)
+      if (attr.value.startsWith(identifiablePrefix)) nodes.push(currentNode);
+
+    currentNode = walker.nextNode();
+  }
+  return nodes;
+}
+
+function setupAttribute(
+  cs: CancelSignal,
+  parentElement: Element,
+  name: string,
+  value: unknown
+): Promise<unknown> {
+  function changeValue(value: unknown) {
+    if (
+      typeof value === "boolean" ||
+      typeof value === "string" ||
+      typeof value === "number"
+    ) {
+      if (value === false) parentElement.removeAttribute(name);
+      else
+        parentElement.setAttribute(
+          name,
+          value === true ? "" : value.toString()
+        );
+    } else {
+      throw new Error(`Unexpected attribute value for '${name}'`);
+    }
+  }
+
+  if (typeof value === "function") {
+    const valueAsStream = value as Stream<undefined>;
+    return subscribe(valueAsStream, cs, async (value) => {
+      changeValue(value);
+    });
+  } else {
+    changeValue(value);
+    return Promise.resolve();
+  }
+}
+
 async function renderNode(
-  template: Html.Template,
+  node$: Stream<Node>,
   cs: CancelSignal
 ): Promise<[Node, StreamBody<unknown>]> {
-  const iter = renderTemplate(template)(cs);
-  const firstResult = await iter.next();
-  if (firstResult.done)
-    throw new Error(`Render template should return a single Node`);
-  return [firstResult.value, iter];
+  const iter = node$(cs);
+  const result = await iter.next();
+  if (result.done) throw new Error(`Should have rendered a single node`);
+  return [result.value, iter];
 }
 
-function renderElement(element: Html.Element): Stream<Node> {
+function renderChildStream(
+  template$: Stream<Html.TemplateChildAtom>
+): Stream<Node> {
   return async function* (cs: CancelSignal) {
-    const node = document.createElement(element.tagName);
+    const fragment = document.createDocumentFragment();
+    const startMarker = document.createComment("HTMLSTREAM stream start");
+    const endMarker = document.createComment("HTMLSTREAM stream end");
 
-    let childNodeIter: undefined | StreamBody<unknown>;
-    if (element.body) {
-      const [childNode, iter] = await renderNode(element.body, cs);
-      childNodeIter = iter;
-      node.appendChild(childNode);
-    }
+    fragment.appendChild(startMarker);
+    fragment.appendChild(endMarker);
 
-    yield node;
+    yield fragment;
 
-    const attributesTask = subscribe(element.attributes, cs, async (change) => {
-      if (change.value === Html.REMOVE_ATTRIBUTE)
-        node.removeAttribute(change.name);
-      else node.setAttribute(change.name, change.value);
-    });
-    const bodyTask = childNodeIter
-      ? exhaustStreamBody(childNodeIter)
-      : Promise.resolve(COMPLETED);
-
-    await Promise.all([attributesTask, bodyTask]);
-
-    await cs[0];
-    if (childNodeIter) await exhaustStreamBody(childNodeIter);
-    node.remove();
-
-    return COMPLETED;
-  };
-}
-
-function renderText(value: string | Stream<string>): Stream<Node> {
-  return async function* (cs: CancelSignal) {
-    const node = document.createTextNode(
-      typeof value === "string" ? value : ""
+    await subscribe(
+      apply(template$, map(renderTemplateChild), switchTo()),
+      cs,
+      async (childNode) => {
+        let currentNode = startMarker.nextSibling;
+        while (currentNode !== endMarker) {
+          if (currentNode === null)
+            throw new Error(`Can't find stream end marker`);
+          const nextNode = currentNode.nextSibling;
+          currentNode.remove();
+          currentNode = nextNode;
+        }
+        endMarker.parentNode?.insertBefore(childNode, endMarker);
+      }
     );
-    yield node;
 
-    if (typeof value !== "string") {
-      await subscribe(value, cs, async (data) => (node.data = data));
-    }
-
-    await cs[0];
-    node.remove();
     return COMPLETED;
   };
 }
 
-function renderTemplateStream(template$: Stream<Html.Template>): Stream<Node> {
+function renderStaticList(templates: Html.TemplateChildAtom[]): Stream<Node> {
   return async function* (cs: CancelSignal) {
-    const marker = document.createComment(`HTMLSTREAM stream end`);
-    const docFrag = document.createDocumentFragment();
-    docFrag.appendChild(marker);
-    yield docFrag;
+    const children = await Promise.all(
+      templates.map((template) => renderNode(renderTemplateChild(template), cs))
+    );
 
-    const templateNode$ = apply(template$, map(renderTemplate), switchTo());
+    const fragment = document.createDocumentFragment();
 
-    await subscribe(templateNode$, cs, async (node) => {
-      marker.parentNode?.insertBefore(node, marker);
-    });
+    for (const [childNode] of children) fragment.appendChild(childNode);
 
-    await cs[0];
-    marker.remove();
+    yield fragment;
 
+    await Promise.all(children.map(([_node, iter]) => exhaustStreamBody(iter)));
     return COMPLETED;
   };
 }
 
-function renderTemplateList(templates: Html.TemplateAtom[]): Stream<Node> {
-  return async function* (cs: CancelSignal) {
-    const docFrag = document.createDocumentFragment();
-
-    const renderedNodes = await Promise.all(
-      templates.map((template) => renderNode([template], cs))
-    );
-    for (const [node] of renderedNodes) docFrag.appendChild(node);
-
-    const marker = document.createComment(`HTMLSTREAM list end`);
-    docFrag.appendChild(marker);
-    yield docFrag;
-
-    await Promise.all(
-      renderedNodes.map(([_node, iter]) => exhaustStreamBody(iter))
-    );
-    await cs[0];
-    marker.remove();
-
-    return COMPLETED;
-  };
-}
-
-function renderTemplateAtom(template: Html.TemplateAtom): Stream<Node> {
-  if ("text" in template) return renderText(template.text);
-  else if ("element" in template) return renderElement(template.element);
-  else if ("stream" in template) return renderTemplateStream(template.stream);
-  else throw new Error(`Unknown template atom type`);
-}
-
-// always returns one Node, cancel to unsub and remove
-export function renderTemplate(template: Html.Template): Stream<Node> {
-  if (template.length === 1) {
-    return renderTemplateAtom(template[0]);
+function renderTemplateChild(template: Html.TemplateChild): Stream<Node> {
+  if (Array.isArray(template)) {
+    return renderStaticList(template);
+  } else if (typeof template === "function") {
+    return renderChildStream(template);
+  } else if (typeof template === "object") {
+    return renderTemplate(template);
   } else {
-    return renderTemplateList(template);
+    return of(document.createTextNode(template.toString()));
   }
+}
+
+export function renderTemplate(
+  template: Html.Template
+): Stream<DocumentFragment> {
+  return async function* (cs: CancelSignal) {
+    const templateElement = document.createElement("template");
+    templateElement.innerHTML = htmlForTemplate(template);
+
+    const fragmentInstance = templateElement.content;
+
+    const valueNodes = findChildValueNodes(fragmentInstance);
+    if (valueNodes.length !== template.values.length)
+      throw new Error(`Template values length does not match`);
+
+    const childTasks = template.values.map((templateValue, idx) => {
+      if ("attribute" in templateValue) {
+        return setupAttribute(
+          cs,
+          valueNodes[idx],
+          templateValue.attribute,
+          templateValue.value
+        );
+      } else {
+        return subscribe(
+          renderTemplateChild(templateValue.child),
+          cs,
+          async (childFragment) => {
+            valueNodes[idx].replaceWith(childFragment);
+          }
+        );
+      }
+    });
+
+    yield fragmentInstance;
+
+    await Promise.all(childTasks);
+    return COMPLETED;
+  };
 }
