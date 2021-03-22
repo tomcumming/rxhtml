@@ -1,6 +1,5 @@
 import {
   apply,
-  CancelSignal,
   COMPLETED,
   exhaustStreamBody,
   of,
@@ -8,6 +7,7 @@ import {
   StreamBody,
   subscribe,
 } from "cancelstream";
+import { CancelSignal, cancelSignal, CancelTrigger } from "cancelstream/cancel";
 import switchTo from "cancelstream/ops/switchTo";
 import map from "cancelstream/ops/map";
 import * as Html from "./html";
@@ -148,21 +148,22 @@ function renderStaticList(templates: Html.TemplateChildAtom[]): Stream<Node> {
 
 async function dynamicListRemove(
   endMarker: Comment,
-  children: [Comment, StreamBody<unknown>][],
+  children: [Comment, CancelTrigger, StreamBody<unknown>][],
   index: number
 ): Promise<void> {
   if (index < 0 || index >= children.length) throw new Error(`List remove OOB`);
 
-  const [startMarker, streamBody] = children[index];
+  const [startMarker, cancel, streamBody] = children[index];
+  cancel();
   await exhaustStreamBody(streamBody);
 
   const end = children[index + 1]?.[0] || endMarker;
-  for (
-    let current: null | ChildNode = startMarker;
-    current !== end;
-    current = current?.nextSibling || null
-  ) {
-    current?.remove();
+  let current: null | ChildNode = startMarker;
+  while (current !== end) {
+    if (current === null) throw new Error(`Could not find end marker`);
+    const removing = current;
+    current = current.nextSibling;
+    removing.remove();
   }
 
   children.splice(index, 1);
@@ -171,15 +172,17 @@ async function dynamicListRemove(
 async function dynamicListAdd(
   cs: CancelSignal,
   endMarker: Comment,
-  children: [Comment, StreamBody<unknown>][],
+  children: [Comment, CancelTrigger, StreamBody<unknown>][],
   index: number,
   template: Html.TemplateChildAtom
 ): Promise<void> {
   if (index < 0 || index > children.length) throw new Error(`List add OOB`);
 
+  const childCs = cancelSignal(cs);
+
   const [newNode, newStreamBody] = await renderNode(
     renderTemplateChild(template),
-    cs
+    childCs.cs
   );
 
   const childStartComment = document.createComment("STREAMHTML li start");
@@ -189,7 +192,7 @@ async function dynamicListAdd(
 
   const nextMarker = children[index]?.[0] || endMarker;
   nextMarker.parentNode?.insertBefore(childFrag, nextMarker);
-  children.splice(index, 0, [childStartComment, newStreamBody]);
+  children.splice(index, 0, [childStartComment, childCs.cancel, newStreamBody]);
 }
 
 function renderDynamicList(
@@ -201,7 +204,7 @@ function renderDynamicList(
     fragment.appendChild(endMarker);
     yield fragment;
 
-    const children: [Comment, StreamBody<unknown>][] = [];
+    const children: [Comment, CancelTrigger, StreamBody<unknown>][] = [];
 
     await subscribe(change$, cs, async (change) => {
       if ("remove" in change) {
@@ -212,10 +215,14 @@ function renderDynamicList(
           endMarker,
           children,
           change.insert,
-          change.value
+          change.template
         );
       }
     });
+
+    await Promise.all(
+      children.map(([_comment, _cancel, body]) => exhaustStreamBody(body))
+    );
 
     return COMPLETED;
   };

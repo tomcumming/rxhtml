@@ -2,7 +2,7 @@
   "scripts": {
     "format": "prettier --write package.json tsconfig.json src/**/*",
     "check": "tsc",
-    "dev": "esbuild src/main.tsx --servedir=www --outdir=www/js --bundle --format=esm"
+    "dev": "esbuild src/main.ts --servedir=www --outdir=www/js --bundle --format=esm"
   },
   "dependencies": {
     "cancelstream": "file:../cancelstream"

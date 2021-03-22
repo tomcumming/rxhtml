@@ -14,7 +14,7 @@ export type TemplateChildAtom = TemplateStringlike | Template;
 export const DYNAMIC_LIST = Symbol("HTMLSTREAM Dynamic List");
 
 export type DynamicListChange =
-  | { insert: number; value: TemplateChildAtom }
+  | { insert: number; template: TemplateChildAtom }
   | { remove: number };
 
 export type DynamicList = {
