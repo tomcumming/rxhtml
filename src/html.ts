@@ -11,15 +11,30 @@ export type TemplateStringlike = string | number | boolean;
 
 export type TemplateChildAtom = TemplateStringlike | Template;
 
+export const DYNAMIC_LIST = Symbol("HTMLSTREAM Dynamic List");
+
+export type DynamicListChange =
+  | { insert: number; value: TemplateChildAtom }
+  | { remove: number };
+
+export type DynamicList = {
+  [DYNAMIC_LIST]: Stream<DynamicListChange>;
+};
+
 export type TemplateChild =
   | TemplateChildAtom
   | Stream<TemplateChildAtom>
-  | TemplateChildAtom[];
+  | TemplateChildAtom[]
+  | DynamicList;
 
 export type Template = {
   stringParts: TemplateStringsArray;
   values: TemplateValuePart[];
 };
+
+export function childIsDynamicList(tc: TemplateChild): tc is DynamicList {
+  return typeof tc === "object" && DYNAMIC_LIST in tc;
+}
 
 export function html(
   stringParts: TemplateStringsArray,

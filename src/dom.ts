@@ -146,11 +146,88 @@ function renderStaticList(templates: Html.TemplateChildAtom[]): Stream<Node> {
   };
 }
 
+async function dynamicListRemove(
+  endMarker: Comment,
+  children: [Comment, StreamBody<unknown>][],
+  index: number
+): Promise<void> {
+  if (index < 0 || index >= children.length) throw new Error(`List remove OOB`);
+
+  const [startMarker, streamBody] = children[index];
+  await exhaustStreamBody(streamBody);
+
+  const end = children[index + 1]?.[0] || endMarker;
+  for (
+    let current: null | ChildNode = startMarker;
+    current !== end;
+    current = current?.nextSibling || null
+  ) {
+    current?.remove();
+  }
+
+  children.splice(index, 1);
+}
+
+async function dynamicListAdd(
+  cs: CancelSignal,
+  endMarker: Comment,
+  children: [Comment, StreamBody<unknown>][],
+  index: number,
+  template: Html.TemplateChildAtom
+): Promise<void> {
+  if (index < 0 || index > children.length) throw new Error(`List add OOB`);
+
+  const [newNode, newStreamBody] = await renderNode(
+    renderTemplateChild(template),
+    cs
+  );
+
+  const childStartComment = document.createComment("STREAMHTML li start");
+  const childFrag = document.createDocumentFragment();
+  childFrag.appendChild(childStartComment);
+  childFrag.appendChild(newNode);
+
+  const nextMarker = children[index]?.[0] || endMarker;
+  nextMarker.parentNode?.insertBefore(childFrag, nextMarker);
+  children.splice(index, 0, [childStartComment, newStreamBody]);
+}
+
+function renderDynamicList(
+  change$: Stream<Html.DynamicListChange>
+): Stream<Node> {
+  return async function* (cs: CancelSignal) {
+    const endMarker = document.createComment("STREAMHTML end list");
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(endMarker);
+    yield fragment;
+
+    const children: [Comment, StreamBody<unknown>][] = [];
+
+    await subscribe(change$, cs, async (change) => {
+      if ("remove" in change) {
+        await dynamicListRemove(endMarker, children, change.remove);
+      } else {
+        await dynamicListAdd(
+          cs,
+          endMarker,
+          children,
+          change.insert,
+          change.value
+        );
+      }
+    });
+
+    return COMPLETED;
+  };
+}
+
 function renderTemplateChild(template: Html.TemplateChild): Stream<Node> {
   if (Array.isArray(template)) {
     return renderStaticList(template);
   } else if (typeof template === "function") {
     return renderChildStream(template);
+  } else if (Html.childIsDynamicList(template)) {
+    return renderDynamicList(template[Html.DYNAMIC_LIST]);
   } else if (typeof template === "object") {
     return renderTemplate(template);
   } else {
