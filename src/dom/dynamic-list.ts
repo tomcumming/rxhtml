@@ -85,6 +85,9 @@ export function renderDynamicList(
       }
     });
 
+    for (const [comment] of children) comment.remove();
+    endMarker.remove();
+
     await Promise.all(
       children.map(([_comment, _cancel, body]) => exhaustStreamBody(body))
     );

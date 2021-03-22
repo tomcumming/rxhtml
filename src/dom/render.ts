@@ -53,6 +53,9 @@ function renderChildStream(
       }
     );
 
+    startMarker.remove();
+    endMarker.remove();
+
     return COMPLETED;
   };
 }
