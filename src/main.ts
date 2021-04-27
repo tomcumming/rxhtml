@@ -1,5 +1,6 @@
-import { from, of, subscribe } from "cancelstream";
+import { apply, from, of, subscribe } from "cancelstream";
 import { NEVER } from "cancelstream/cancel";
+import map from "cancelstream/ops/map";
 import { renderTemplate } from "./dom";
 import * as Html from "./html";
 import { html } from "./html";
@@ -38,6 +39,7 @@ const myExampleTemplate = html`
   </h1>
   <ul>
     ${[1, 2, 3].map((n) => html`<li>Item ${n}</li>`)}
+    ${apply(of(6,5,4), map(n => html`<li>${n}</li>`))}
   </ul>
   ${dynamicListTest}
 `;
