@@ -1,31 +1,32 @@
 import {
   CancelSignal,
   COMPLETED,
-  exhaustStreamBody,
+  finish,
+  fromGenerator,
   Stream,
-  StreamBody,
+  StreamResult,
   subscribe,
 } from "cancelstream";
 import { cancelSignal, CancelTrigger } from "cancelstream/cancel";
 
 import * as Html from "../html";
-import { renderNode, renderTemplateChild } from "./render";
+import { ensureNode, renderTemplateChild } from "./render";
+
+const CHILD_SHOULD_HAVE_COMPLETED = `Child should have completed`;
 
 async function dynamicListAdd(
   cs: CancelSignal,
   endMarker: Comment,
-  children: [Comment, CancelTrigger, StreamBody<unknown>][],
+  children: [Comment, CancelTrigger, Promise<StreamResult<unknown>>][],
   index: number,
   template: Html.TemplateChildAtom
 ): Promise<void> {
   if (index < 0 || index > children.length) throw new Error(`List add OOB`);
 
-  const childCs = cancelSignal(cs);
+  const [childCs, childTrigger] = cancelSignal();
 
-  const [newNode, newStreamBody] = await renderNode(
-    renderTemplateChild(template),
-    childCs.cs
-  );
+  const [newNode$, newNode] = await ensureNode(renderTemplateChild(template));
+  const newStreamResult = newNode$(childCs);
 
   const childStartComment = document.createComment("STREAMHTML li start");
   const childFrag = document.createDocumentFragment();
@@ -34,19 +35,22 @@ async function dynamicListAdd(
 
   const nextMarker = children[index]?.[0] || endMarker;
   nextMarker.parentNode?.insertBefore(childFrag, nextMarker);
-  children.splice(index, 0, [childStartComment, childCs.cancel, newStreamBody]);
+  children.splice(index, 0, [childStartComment, childTrigger, newStreamResult]);
 }
 
 async function dynamicListRemove(
   endMarker: Comment,
-  children: [Comment, CancelTrigger, StreamBody<unknown>][],
+  children: [Comment, CancelTrigger, Promise<StreamResult<unknown>>][],
   index: number
 ): Promise<void> {
   if (index < 0 || index >= children.length) throw new Error(`List remove OOB`);
 
-  const [startMarker, cancel, streamBody] = children[index];
+  if (index === 1) debugger;
+
+  const [startMarker, cancel, streamResult] = children[index];
   cancel();
-  await exhaustStreamBody(streamBody);
+  if ((await streamResult) !== COMPLETED)
+    throw new Error(CHILD_SHOULD_HAVE_COMPLETED);
 
   const end = children[index + 1]?.[0] || endMarker;
   let current: null | ChildNode = startMarker;
@@ -63,13 +67,17 @@ async function dynamicListRemove(
 export function renderDynamicList(
   change$: Stream<Html.DynamicListChange>
 ): Stream<Node> {
-  return async function* (cs: CancelSignal) {
+  return fromGenerator(async function* (cs: CancelSignal) {
     const endMarker = document.createComment("STREAMHTML end list");
     const fragment = document.createDocumentFragment();
     fragment.appendChild(endMarker);
-    yield fragment;
+    [cs] = yield fragment;
 
-    const children: [Comment, CancelTrigger, StreamBody<unknown>][] = [];
+    const children: [
+      Comment,
+      CancelTrigger,
+      Promise<StreamResult<unknown>>
+    ][] = [];
 
     await subscribe(change$, cs, async (change) => {
       if ("remove" in change) {
@@ -85,13 +93,11 @@ export function renderDynamicList(
       }
     });
 
-    for (const [comment] of children) comment.remove();
+    await cs;
+
+    while (children.length > 0) await dynamicListRemove(endMarker, children, 0);
     endMarker.remove();
 
-    await Promise.all(
-      children.map(([_comment, _cancel, body]) => exhaustStreamBody(body))
-    );
-
     return COMPLETED;
-  };
+  });
 }

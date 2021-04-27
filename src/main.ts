@@ -1,4 +1,5 @@
-import { from, into, of } from "cancelstream";
+import { from, of, subscribe } from "cancelstream";
+import { NEVER } from "cancelstream/cancel";
 import { renderTemplate } from "./dom";
 import * as Html from "./html";
 import { html } from "./html";
@@ -8,7 +9,8 @@ function delay(timeMs: number) {
 }
 
 async function* dynamicListChanges(): AsyncGenerator<Html.DynamicListChange> {
-  yield { insert: 0, template: "One" }, await delay(1000);
+  yield { insert: 0, template: "One" };
+  await delay(1000);
   yield { insert: 1, template: html`<h2>Two</h2>` };
   await delay(1000);
   yield { remove: 0 };
@@ -40,10 +42,8 @@ const myExampleTemplate = html`
   ${dynamicListTest}
 `;
 
-async function main() {
-  for await (const node of into(renderTemplate(myExampleTemplate))) {
-    document.body.appendChild(node);
-  }
-}
-
-main();
+subscribe(
+  renderTemplate(myExampleTemplate),
+  NEVER,
+  async node => document.body.appendChild(node)
+);

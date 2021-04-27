@@ -1,33 +1,33 @@
 import {
   apply,
   COMPLETED,
-  exhaustStreamBody,
   of,
   Stream,
-  StreamBody,
   subscribe,
   CancelSignal,
+  fromGenerator,
+  intoArray,
 } from "cancelstream";
-import switchTo from "cancelstream/ops/switchTo";
 import map from "cancelstream/ops/map";
+import switchTo from "cancelstream/ops/switchTo";
 import * as Html from "../html";
-import { renderDynamicList } from "./dynamic-list";
 import { renderTemplate } from ".";
+import { NEVER } from "cancelstream/cancel";
+import { renderDynamicList } from "./dynamic-list";
 
-export async function renderNode(
-  node$: Stream<Node>,
-  cs: CancelSignal
-): Promise<[Node, StreamBody<unknown>]> {
-  const iter = node$(cs);
-  const result = await iter.next();
-  if (result.done) throw new Error(`Should have rendered a single node`);
-  return [result.value, iter];
+export async function ensureNode(
+  node$: Stream<Node>
+): Promise<[Stream<unknown>, Node]> {
+  const result = await node$(NEVER);
+  if (result === COMPLETED)
+    throw new Error(`Should have rendered a single node`);
+  return result;
 }
 
 function renderChildStream(
   template$: Stream<Html.TemplateChildAtom>
 ): Stream<Node> {
-  return async function* (cs: CancelSignal) {
+  return fromGenerator(async function* (cs: CancelSignal) {
     const fragment = document.createDocumentFragment();
     const startMarker = document.createComment("HTMLSTREAM stream start");
     const endMarker = document.createComment("HTMLSTREAM stream end");
@@ -35,7 +35,7 @@ function renderChildStream(
     fragment.appendChild(startMarker);
     fragment.appendChild(endMarker);
 
-    yield fragment;
+    [cs] = yield fragment;
 
     await subscribe(
       apply(template$, map(renderTemplateChild), switchTo()),
@@ -57,24 +57,24 @@ function renderChildStream(
     endMarker.remove();
 
     return COMPLETED;
-  };
+  });
 }
 
 function renderStaticList(templates: Html.TemplateChildAtom[]): Stream<Node> {
-  return async function* (cs: CancelSignal) {
+  return fromGenerator(async function* (cs: CancelSignal) {
     const children = await Promise.all(
-      templates.map((template) => renderNode(renderTemplateChild(template), cs))
+      templates.map((template) => ensureNode(renderTemplateChild(template)))
     );
 
     const fragment = document.createDocumentFragment();
 
-    for (const [childNode] of children) fragment.appendChild(childNode);
+    for (const [_node$, childNode] of children) fragment.appendChild(childNode);
 
-    yield fragment;
+    [cs] = yield fragment;
 
-    await Promise.all(children.map(([_node, iter]) => exhaustStreamBody(iter)));
+    await Promise.all(children.map(([node$]) => intoArray(node$, cs)));
     return COMPLETED;
-  };
+  });
 }
 
 export function renderTemplateChild(

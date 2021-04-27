@@ -1,4 +1,10 @@
-import { COMPLETED, Stream, subscribe, CancelSignal } from "cancelstream";
+import {
+  COMPLETED,
+  Stream,
+  subscribe,
+  CancelSignal,
+  fromGenerator,
+} from "cancelstream";
 import * as Html from "../html";
 import { renderTemplateChild } from "./render";
 
@@ -79,7 +85,7 @@ function setupAttribute(
 export function renderTemplate(
   template: Html.Template
 ): Stream<DocumentFragment> {
-  return async function* (cs: CancelSignal) {
+  return fromGenerator(async function* (cs: CancelSignal) {
     const templateElement = document.createElement("template");
     templateElement.innerHTML = htmlForTemplate(template);
 
@@ -88,6 +94,8 @@ export function renderTemplate(
     const valueNodes = findChildValueNodes(fragmentInstance);
     if (valueNodes.length !== template.values.length)
       throw new Error(`Template values length does not match`);
+
+    [cs] = yield fragmentInstance;
 
     const childTasks = template.values.map((templateValue, idx) => {
       if ("attribute" in templateValue) {
@@ -108,9 +116,6 @@ export function renderTemplate(
       }
     });
 
-    yield fragmentInstance;
-
     await Promise.all(childTasks);
-    return COMPLETED;
-  };
+  });
 }
