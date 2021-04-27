@@ -45,8 +45,6 @@ async function dynamicListRemove(
 ): Promise<void> {
   if (index < 0 || index >= children.length) throw new Error(`List remove OOB`);
 
-  if (index === 1) debugger;
-
   const [startMarker, cancel, streamResult] = children[index];
   cancel();
   if ((await streamResult) !== COMPLETED)
